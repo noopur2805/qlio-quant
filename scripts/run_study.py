@@ -45,6 +45,18 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def resolve_device(requested):
+    if requested == "cpu":
+        return "cpu"
+    available = (torch.cuda.is_available() if requested.startswith("cuda")
+                else getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+                if requested == "mps" else False)
+    if not available:
+        log(f"  WARNING: requested device={requested!r} but it is not available; falling back to cpu")
+        return "cpu"
+    return requested
+
+
 # --------------------------------------------------------------------------
 # Part 1: regenerate the VIO/EKF diagnostic plots from the debugging session
 # --------------------------------------------------------------------------
@@ -165,12 +177,16 @@ def part2_train(args, train_seqs, val_seqs, test_seqs):
     log(f"  windows: {len(train_ds)} train / {len(val_ds)} val / {len(test_ds)} test")
 
     model = tlio_resnet() if args.model == "tlio" else small_resnet()
+    device = resolve_device(args.device)
+    log(f"  training on device={device}")
     t0 = time.time()
     history = train(model, train_ds, val_ds=val_ds, epochs_mse=args.epochs_mse,
-                    epochs_nll=args.epochs_nll, batch_size=args.batch_size, seed=SEED)
+                    epochs_nll=args.epochs_nll, batch_size=args.batch_size, seed=SEED,
+                    device=device)
     log(f"  trained in {time.time()-t0:.1f}s, final val_rmse_m={history[-1].get('val_rmse_m')}")
 
-    err, sig = evaluate(model, test_ds)
+    model = model.to("cpu")  # Parts 3-4 study single-window CPU inference specifically
+    err, sig = evaluate(model, test_ds, device="cpu")
     log(f"  fp32 test RMSE={np.sqrt(np.mean(np.sum(err**2,axis=1))):.4f} m, "
         f"mean z²={overconfidence(err, sig):.2f}")
     return model, train_ds, val_ds, test_ds, history
@@ -374,6 +390,10 @@ def build_args():
     p.add_argument("--epochs-mse", type=int, default=2)
     p.add_argument("--epochs-nll", type=int, default=5)
     p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--device", default="cpu",
+                   help="Device for training/evaluation in Part 2, e.g. cuda, cuda:0, mps. "
+                        "Parts 3-4 (quantization, EKF) always run on CPU: that IS the "
+                        "deployment scenario being studied (single-window inference).")
     p.add_argument("--skip-camera", action="store_true",
                    help="Skip part 1; camera observations are simulated even on real IMU data.")
     p.add_argument("--out", default=None, help="Output directory (default: <repo>/results)")
