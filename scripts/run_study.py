@@ -180,10 +180,13 @@ def part2_train(args, train_seqs, val_seqs, test_seqs):
     device = resolve_device(args.device)
     log(f"  training on device={device}")
     t0 = time.time()
+    ckpt_path = OUT / "checkpoint_last.pt" if getattr(args, "ckpt", True) else None
     history = train(model, train_ds, val_ds=val_ds, epochs_mse=args.epochs_mse,
                     epochs_nll=args.epochs_nll, batch_size=args.batch_size, seed=SEED,
-                    device=device)
-    log(f"  trained in {time.time()-t0:.1f}s, final val_rmse_m={history[-1].get('val_rmse_m')}")
+                    device=device, progress=True, ckpt_path=ckpt_path)
+    log(f"  trained in {(time.time()-t0)/60:.1f} min, final val_rmse_m={history[-1].get('val_rmse_m')}")
+    if ckpt_path is not None:
+        log(f"  checkpoint saved to {ckpt_path}")
 
     model = model.to("cpu")  # Parts 3-4 study single-window CPU inference specifically
     err, sig = evaluate(model, test_ds, device="cpu")
@@ -396,6 +399,8 @@ def build_args():
                         "deployment scenario being studied (single-window inference).")
     p.add_argument("--skip-camera", action="store_true",
                    help="Skip part 1; camera observations are simulated even on real IMU data.")
+    p.add_argument("--no-ckpt", dest="ckpt", action="store_false",
+                   help="Disable per-epoch checkpoint saving (default: enabled).")
     p.add_argument("--out", default=None, help="Output directory (default: <repo>/results)")
     return p.parse_args()
 
