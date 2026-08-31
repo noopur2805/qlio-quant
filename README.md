@@ -164,9 +164,14 @@ Drop `--batch-size` to 64 or 32 if you hit an out-of-memory error (e.g. on a
 --epochs-mse N         MSE warm-up epochs (default 2)
 --epochs-nll N         Gaussian NLL epochs (default 5)
 --batch-size N         (default 64)
+--device DEV           device for training/eval in Part 2 only, e.g. cuda, cuda:0, mps
+                       (default cpu). Parts 3-4 (quantization, EKF) always run on CPU:
+                       that IS the deployment scenario being studied.
 --skip-camera          skip Part 1 camera/MSCKF diagnostics (recommended on real data)
 --out DIR              output directory (default: results/)
 ```
+
+Example GPU training run: add `--device cuda` to any of the commands above.
 
 ---
 
