@@ -30,7 +30,7 @@ def train(model, train_ds, val_ds=None, epochs_mse=2, epochs_nll=6, batch_size=6
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             opt.step()
-            run += float(loss)
+            run += loss.detach().item()
             nb += 1
         sched.step()
         rec = {"epoch": ep, "stage": stage, "train_loss": run / max(nb, 1)}
