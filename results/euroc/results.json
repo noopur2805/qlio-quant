@@ -1,0 +1,21 @@
+{
+  "mode": "bag_leica (position-only ground truth)",
+  "sequence": "MH_01_easy",
+  "window_s": [
+    46.01032590866089,
+    181.0103259086609
+  ],
+  "images": 2700,
+  "features_per_frame": 203.9755464987032,
+  "alignment": "4-DoF (yaw + translation)",
+  "vio": {
+    "ate_m": 0.3296872945056962,
+    "drift_pct": 0.9259614586634016,
+    "rte_10s_m": 0.3674876723776519,
+    "msckf_features_fused": 44330
+  },
+  "dead_reckoning": {
+    "ate_m": 7561.843403952649,
+    "final_err_m": 19265.68958367037
+  }
+}

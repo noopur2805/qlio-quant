@@ -6,7 +6,7 @@ from qlio.camera import (CameraModel, feature_jacobians, left_nullspace,
 from qlio.data import synth_sequence
 from qlio.ekf import EKFConfig, StochasticCloningEKF
 from qlio.geometry import gravity_aligned_frame, so3_exp
-from qlio.metrics import drift_ratio
+from qlio.metrics import align_yaw_xy, drift_ratio
 from qlio.vio_runner import VIOConfig, run_vio
 
 
@@ -114,6 +114,16 @@ def test_feature_jacobian_matches_numerical():
         rp, _, _ = feature_jacobians(g, cam, clone_ids, obs, p_f)
         Hn[:, j] = ((-rp) - base) / eps
     assert np.allclose(Hx, Hn, atol=1e-3), np.abs(Hx - Hn).max()
+
+
+def test_align_yaw_xy_recovers_frame_offset():
+    """A yaw-rotated + translated copy of a trajectory must align back exactly."""
+    rng = np.random.default_rng(6)
+    p = np.cumsum(rng.normal(size=(400, 3)), axis=0) * 0.1
+    a = 1.3
+    Rz = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1.0]])
+    q = p @ Rz.T + np.array([4.0, -2.0, 0.7])
+    assert np.allclose(align_yaw_xy(p, q), q, atol=1e-9)
 
 
 def test_nullspace_removes_landmark_dependence():

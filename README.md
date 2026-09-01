@@ -5,23 +5,39 @@ TLIO-style learned displacement+covariance network fused in as an additional
 inertial measurement update, plus a quantization ablation studying how
 int-N compression of that network affects filter consistency (NEES) and drift.
 
+Headline measured results (details + caveats in `results/REPORT.md`):
+
+- **FEJ consistency fix** on the learned-displacement update: NEES 3.9 → 0.35,
+  drift 0.60 % → 0.13 % on the diagnostic A/B (`EKFConfig.use_fej`, default on).
+- **Full TLIO dataset** (283 train / 36 test sequences): fp32 RMSE 0.231 m at
+  z² 1.19; int4 on the mean head silently destroys calibration (z² 5) while
+  RMSE barely moves; native int8 PTQ runs **2.2× faster** on real kernels.
+- **Real images**: KLT front-end on EuRoC MH_01 through the same filter —
+  **0.93 % drift / 0.33 m ATE over a 135 s flight** (dead reckoning: 7.5 km).
+- **C++ core** (Eigen + pybind11) with lockstep parity to 1e-10 and 3.3×
+  throughput.
+
 - `qlio/geometry.py` — SO(3) utilities, exact yaw-world Jacobians
 - `qlio/data.py` — TLIO golden-format loader + synthetic pedestrian IMU/trajectory generator
 - `qlio/model.py` — 1D ResNet with separate mean/log-variance heads
-- `qlio/ekf.py` — stochastic-cloning EKF, Joseph-form updates, chi-squared gating
+- `qlio/ekf.py` — stochastic-cloning EKF, FEJ, Joseph-form updates, chi-squared gating
 - `qlio/camera.py` — MSCKF camera updates: inverse-depth triangulation, nullspace projection
 - `qlio/vio_runner.py` — fuses camera + learned-inertial updates in one filter
-- `qlio/quantize.py` — fake-quantization, calibration, size/latency benchmarking
+- `qlio/tracker.py` — real KLT feature tracker (OpenCV): FB check, RANSAC, undistortion
+- `qlio/euroc.py` — EuRoC MAV rosbag loader (images streamed, Leica ground truth)
+- `qlio/quantize.py` — fake-quant per scope + native int8 static PTQ, benchmarking
 - `qlio/train.py`, `qlio/losses.py` — two-stage (MSE → Gaussian NLL) training
-- `qlio/metrics.py` — ATE, drift ratio, NEES, overconfidence (mean z²), variance recalibration
+- `qlio/metrics.py` — ATE, drift ratio, NEES, mean z², 4-DoF alignment, recalibration
 - `scripts/run_study.py` — end-to-end study: diagnostics → train → quantize → re-run EKF
-- `tests/` — 16 unit tests covering geometry, EKF, and camera/MSCKF paths
+- `scripts/run_euroc.py` — real-image VIO on EuRoC MH_01
+- `cpp/` — C++ EKF core (Eigen + pybind11) with parity check and benchmark
+- `tests/` — 18 unit tests covering geometry, EKF/FEJ, and camera/MSCKF paths
 
-**Important caveat:** the camera path (`qlio/camera.py`) always uses *simulated*
-observations — pinhole projection of synthetic landmarks with oracle data
-association, no real images, no feature tracker. This is true even when the
-underlying trajectory/IMU comes from real TLIO data. Use `--skip-camera` when
-running on real data to avoid mixing a real trajectory with fake vision.
+**Caveat on the TLIO study:** the TLIO dataset is IMU-only, so `run_study.py`'s
+camera path uses *simulated* observations (pinhole projection of synthetic
+landmarks, oracle association). Use `--skip-camera` on real TLIO data to avoid
+mixing a real trajectory with fake vision. For vision on **real images**, use
+`scripts/run_euroc.py` — real camera stream, real KLT tracker, no oracle.
 
 ---
 
@@ -134,13 +150,25 @@ PYTHONPATH=. python scripts/run_study.py \
   --out results/tlio_cpu_full
 ```
 
-### Full run, GPU (paper-sized network)
+### Full dataset, CPU (small network — the run behind results/REPORT.md §2-3)
 
 ```bash
 PYTHONPATH=. python scripts/run_study.py \
   --data-root local_data/tlio_golden \
-  --model tlio \
-  --max-train-seqs 200 --max-val-seqs 20 --max-test-seqs 20 \
+  --model small \
+  --max-train-seqs 400 --max-val-seqs 40 --max-test-seqs 40 \
+  --epochs-mse 2 --epochs-nll 6 --batch-size 128 \
+  --skip-camera \
+  --out results/tlio_full_small
+```
+
+### Full dataset, GPU (paper-sized network)
+
+```bash
+PYTHONPATH=. python scripts/run_study.py \
+  --data-root local_data/tlio_golden \
+  --model tlio --device cuda \
+  --max-train-seqs 400 --max-val-seqs 40 --max-test-seqs 40 \
   --epochs-mse 5 --epochs-nll 25 --batch-size 128 \
   --skip-camera \
   --out results/tlio_full
@@ -148,6 +176,35 @@ PYTHONPATH=. python scripts/run_study.py \
 
 Drop `--batch-size` to 64 or 32 if you hit an out-of-memory error (e.g. on a
 6 GB laptop GPU).
+
+---
+
+## Real images: EuRoC MH_01 (KLT tracker + MSCKF)
+
+```bash
+pip install opencv-python-headless rosbags
+# official zip server is often down; the HuggingFace mirror hosts the rosbag:
+curl -L -o /tmp/euroc/MH_01_easy.bag --create-dirs \
+  "https://huggingface.co/datasets/kavehsgh/EuRoC_MAV_Dataset_Machine_Hall_Easy_01/resolve/main/MH_01_easy.bag"
+PYTHONPATH=. python scripts/run_euroc.py --bag /tmp/euroc/MH_01_easy.bag \
+  --duration 135 --out results/euroc
+```
+
+Outputs `results/euroc/euroc_vio.png` (top-down + altitude vs Leica ground
+truth) and `results/euroc/results.json`. Ground truth is position-only, so
+metrics are computed after standard 4-DoF (yaw+translation) alignment.
+
+---
+
+## C++ EKF core
+
+```bash
+sudo apt-get install libeigen3-dev
+pip install pybind11
+bash cpp/build.sh
+PYTHONPATH=. python cpp/parity_check.py   # lockstep parity vs python, atol=1e-10
+PYTHONPATH=. python cpp/bench.py          # ~3.3x on the mixed filter schedule
+```
 
 ---
 
@@ -180,7 +237,7 @@ Example GPU training run: add `--device cuda` to any of the commands above.
 `results/<name>/results.json` and five plots in `results/<name>/plots/`:
 
 1. `vio_diagnostics.png` — camera-only trajectory, per-axis error growth,
-   modality comparison (camera-only vs inertial-only vs fused drift)
+   modality comparison, double-counting fix, FEJ vs legacy consistency A/B
 2. `quant_uncertainty.png` — RMSE and calibration (mean z²) vs. bit-width,
    per quantization scope (mean head / cov head / trunk / all)
 3. `quant_calibration.png` — before/after variance recalibration
