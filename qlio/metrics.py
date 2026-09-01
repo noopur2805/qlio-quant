@@ -24,6 +24,22 @@ def rte(t, p_est, p_gt, horizon=10.0):
     return float(np.sqrt(np.mean(np.square(errs)))) if errs else float("nan")
 
 
+def align_yaw_xy(p_est, p_gt):
+    """4-DoF (yaw + translation) alignment of an estimated trajectory onto
+    ground truth: the standard evaluation for monocular VIO, whose global yaw
+    and position are unobservable. Returns the aligned copy of p_est."""
+    e = np.asarray(p_est, dtype=float)
+    g = np.asarray(p_gt, dtype=float)
+    ec, gc = e - e.mean(axis=0), g - g.mean(axis=0)
+    num = np.sum(ec[:, 0] * gc[:, 1] - ec[:, 1] * gc[:, 0])
+    den = np.sum(ec[:, 0] * gc[:, 0] + ec[:, 1] * gc[:, 1])
+    a = np.arctan2(num, den)
+    c, s = np.cos(a), np.sin(a)
+    Rz = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    e_rot = e @ Rz.T
+    return e_rot + (g.mean(axis=0) - e_rot.mean(axis=0))
+
+
 def drift_ratio(p_est, p_gt):
     dist = float(np.sum(np.linalg.norm(np.diff(p_gt, axis=0), axis=1)))
     return float(np.linalg.norm(p_est[-1] - p_gt[-1]) / max(dist, 1e-9))
