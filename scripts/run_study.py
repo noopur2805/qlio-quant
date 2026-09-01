@@ -87,7 +87,7 @@ def part1_vio_diagnostics(seq=None):
     ekf_inflated = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=10, overlap_inflation=True))
     ekf_1hz = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=200, overlap_inflation=False))
 
-    fig, axs = plt.subplots(2, 2, figsize=(11, 9))
+    fig, axs = plt.subplots(2, 3, figsize=(15.5, 9))
 
     ax = axs[0, 0]
     ax.plot(run_cam.p_gt[:, 0], run_cam.p_gt[:, 1], "k--", label="ground truth", lw=1.5)
@@ -96,6 +96,13 @@ def part1_vio_diagnostics(seq=None):
     ax.legend(); ax.axis("equal")
 
     ax = axs[0, 1]
+    ax.plot(run_cam.t, run_cam.p_gt[:, 2], "k--", label="ground truth", lw=1.5)
+    ax.plot(run_cam.t, run_cam.p_est[:, 2], label="camera-only VIO", lw=1.2)
+    ax.set_xlabel("time (s)"); ax.set_ylabel("z / height (m)")
+    ax.set_title("(a2) Altitude vs. time")
+    ax.legend()
+
+    ax = axs[0, 2]
     names = ["roll", "pitch", "yaw", "p_x", "p_y", "p_z"]
     n = len(run_cam.pose_err)
     z2 = (run_cam.pose_err / run_cam.sigma_pose) ** 2
@@ -119,7 +126,7 @@ def part1_vio_diagnostics(seq=None):
     for i, v in enumerate(vals):
         ax.text(i, v, f"{v:.2f}%", ha="center", va="bottom")
     ax.set_ylabel("drift ratio (%)")
-    ax.set_title("(c) Modality comparison (30 s synthetic)")
+    ax.set_title(f"(c) Modality comparison ({seq.ts[-1]-seq.ts[0]:.0f}s {seq.name})")
 
     ax = axs[1, 1]
     labels = ["20Hz\nindependent\n(bug)", "20Hz\ninflated R\n(fix)", "1Hz\nnon-overlap"]
@@ -133,6 +140,8 @@ def part1_vio_diagnostics(seq=None):
     ax.set_ylabel("NEES / dof")
     ax.set_yscale("log")
     ax.set_title("(d) Inertial-side double-counting fix")
+
+    axs[1, 2].axis("off")
 
     fig.tight_layout()
     fig.savefig(PLOTS / "vio_diagnostics.png", dpi=140)
