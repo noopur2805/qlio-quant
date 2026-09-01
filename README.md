@@ -201,18 +201,68 @@ Drop `--batch-size` to 64 or 32 if you hit an out-of-memory error (e.g. on a
 
 ## Real images: EuRoC MH_01 (KLT tracker + MSCKF)
 
+Run these **in order, waiting for each to finish**. Each step depends on the
+previous one having actually succeeded.
+
+**1. Dependencies**
+
 ```bash
 pip install opencv-python-headless rosbags
-# official zip server is often down; the HuggingFace mirror hosts the rosbag:
-curl -L -o /tmp/euroc/MH_01_easy.bag --create-dirs \
+```
+
+**2. Download the rosbag (~2.5 GB, takes minutes)**
+
+`local_data/` is used rather than `/tmp` because `/tmp` is wiped on reboot.
+
+```bash
+curl -L -o local_data/euroc/MH_01_easy.bag --create-dirs \
   "https://huggingface.co/datasets/kavehsgh/EuRoC_MAV_Dataset_Machine_Hall_Easy_01/resolve/main/MH_01_easy.bag"
-PYTHONPATH=. python scripts/run_euroc.py --bag /tmp/euroc/MH_01_easy.bag \
+```
+
+If that mirror stalls or errors, use the official ETH server (frequently down,
+which is why the mirror is listed first):
+
+```bash
+curl -L -o local_data/euroc/MH_01_easy.bag --create-dirs \
+  "http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/machine_hall/MH_01_easy/MH_01_easy.bag"
+```
+
+**3. Verify the download before continuing**
+
+```bash
+ls -lh local_data/euroc/MH_01_easy.bag
+```
+
+Expect roughly **2.5G**. If the file is missing or only a few KB the download
+failed — fix that before going further, or step 4 will fail with
+`FileNotFoundError: The following paths are missing: [...MH_01_easy.bag]`.
+
+**4. Run the VIO**
+
+```bash
+PYTHONPATH=. python scripts/run_euroc.py \
+  --bag local_data/euroc/MH_01_easy.bag \
   --duration 135 --out results/euroc
 ```
 
+**5. Plot — only after step 4 completes**
+
+```bash
+PYTHONPATH=. python scripts/plot_trajectory.py results/euroc
+```
+
 Outputs `results/euroc/euroc_vio.png` (top-down + altitude vs Leica ground
-truth) and `results/euroc/results.json`. Ground truth is position-only, so
-metrics are computed after standard 4-DoF (yaw+translation) alignment.
+truth), `results/euroc/results.json`, `results/euroc/trajectories.npz`, and
+`results/euroc/trajectory_3d.png`. Ground truth is position-only, so metrics
+are computed after standard 4-DoF (yaw+translation) alignment.
+
+### Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `FileNotFoundError: The following paths are missing: [...MH_01_easy.bag]` | Bag not downloaded, or `--bag` path doesn't match where it landed | Run step 2, then verify with step 3 |
+| `FileNotFoundError: ... results/euroc/trajectories.npz` | `plot_trajectory.py` run before `run_euroc.py` succeeded | Complete step 4 first — the `.npz` is written by the run |
+| `ModuleNotFoundError: rosbags` / `cv2` | Missing dependencies | Run step 1 |
 
 ---
 
@@ -277,6 +327,11 @@ reckoning, and every filter config, all on a common time base). Render it:
 PYTHONPATH=. python scripts/plot_trajectory.py results/tlio_full_small
 PYTHONPATH=. python scripts/plot_trajectory.py results/euroc
 ```
+
+The `.npz` is written *by the run*, so the corresponding study must have
+completed first. Result directories produced before trajectory saving was added
+don't contain one and need the study re-run — otherwise this fails with
+`FileNotFoundError: ... trajectories.npz`.
 
 Writes `<run_dir>/trajectory_3d.png`: a 3D trajectory view (equal-aspect, so
 drift isn't visually flattened) alongside absolute position error vs. time.
