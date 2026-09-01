@@ -52,6 +52,25 @@ def quat_to_rot(q_xyzw):
     )
 
 
+def quats_to_rots(q_xyzw):
+    """Vectorised quat_to_rot: (N,4) xyzw -> (N,3,3)."""
+    q = np.asarray(q_xyzw, dtype=np.float64)
+    n = np.linalg.norm(q, axis=1, keepdims=True)
+    q = q / np.maximum(n, 1e-12)
+    x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    R = np.empty((len(q), 3, 3))
+    R[:, 0, 0] = 1 - 2 * (y * y + z * z)
+    R[:, 0, 1] = 2 * (x * y - z * w)
+    R[:, 0, 2] = 2 * (x * z + y * w)
+    R[:, 1, 0] = 2 * (x * y + z * w)
+    R[:, 1, 1] = 1 - 2 * (x * x + z * z)
+    R[:, 1, 2] = 2 * (y * z - x * w)
+    R[:, 2, 0] = 2 * (x * z - y * w)
+    R[:, 2, 1] = 2 * (y * z + x * w)
+    R[:, 2, 2] = 1 - 2 * (x * x + y * y)
+    return R
+
+
 def rot_to_quat(R):
     t = np.trace(R)
     if t > 0:

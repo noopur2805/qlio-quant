@@ -83,9 +83,11 @@ def test_triangulation_precision_matches_theory(scene):
 
 
 def test_feature_jacobian_matches_numerical():
+    # use_fej=False so the analytic Jacobian and the numerical differentiation
+    # share the same linearisation point (the current estimate).
     rng = np.random.default_rng(4)
     cam = CameraModel()
-    f = StochasticCloningEKF(EKFConfig(max_clones=3))
+    f = StochasticCloningEKF(EKFConfig(max_clones=3, use_fej=False))
     f.set_state(R=so3_exp(rng.normal(size=3) * 0.2), p=rng.normal(size=3))
     for t in range(3):
         f.clone(float(t))
@@ -99,7 +101,7 @@ def test_feature_jacobian_matches_numerical():
     Hn = np.zeros_like(Hx)
     base = -r  # residual is z - h, so h = z - r
     for j in range(f.dim):
-        g = StochasticCloningEKF(EKFConfig(max_clones=3))
+        g = StochasticCloningEKF(EKFConfig(max_clones=3, use_fej=False))
         g.set_state(R=f.R.copy(), v=f.v.copy(), p=f.p.copy())
         for cl in f.clones:
             g.clone(cl.t)
@@ -139,7 +141,7 @@ def test_camera_only_roll_pitch_stay_consistent(scene):
     """Roll/pitch/height are observable via gravity even without loop closure,
     so -- unlike yaw/global-xy -- their NEES should stay bounded over time.
     Yaw and xy are known-unobservable and are intentionally NOT asserted here;
-    see camera.py / vio_runner.py module docstrings for the FEJ/OC-EKF caveat.
+    see qlio.camera.feature_jacobians for the measured FEJ/OC-EKF caveat.
     """
     seq, cam, _lm, frames = scene
     run = run_vio(seq, frames=frames, camera=cam,
@@ -151,3 +153,4 @@ def test_camera_only_roll_pitch_stay_consistent(scene):
     second_half = z2[n // 2:][:, observable].mean()
     assert second_half < 10.0, second_half
     assert second_half < 3 * first_half + 2.0, (first_half, second_half)
+

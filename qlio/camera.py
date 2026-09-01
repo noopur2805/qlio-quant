@@ -151,7 +151,18 @@ def triangulate(obs, poses, camera, iters=8):
 
 
 def feature_jacobians(ekf, camera, clone_ids, obs, p_f):
-    """Stack per-observation residuals and Jacobians w.r.t. error state and landmark."""
+    """Stack per-observation residuals and Jacobians w.r.t. error state and landmark.
+
+    Linearised at the current clone estimates. First-estimate (FEJ) variants of
+    this update were implemented and measured (H at frozen clone poses, with
+    and without fej-consistent triangulation): accuracy was a wash but the
+    yaw/xy consistency leak did not close, because the residual's landmark
+    sensitivity is evaluated at the estimate while the nullspace projection
+    would be built at the first estimates. Closing it properly needs
+    observability-constrained updates (OC-EKF), which is out of scope; the
+    learned-displacement update uses FEJ (see qlio.ekf) where it demonstrably
+    fixes consistency.
+    """
     M = len(clone_ids)
     r = np.zeros(2 * M)
     Hx = np.zeros((2 * M, ekf.dim))

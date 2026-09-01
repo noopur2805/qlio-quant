@@ -1,13 +1,11 @@
 """Multimodal VIO: one clone window serving both camera and learned-inertial updates.
 
-Known limitation: Jacobians are linearised at the current (evolving) state
-estimate rather than a fixed first-estimate, so information can leak into the
-filter's unobservable directions (global position, global yaw) across repeated
-linearisations of the same clone. This is the standard VINS consistency issue
-that First-Estimates Jacobians / Observability-Constrained EKF (Huang, Mourikis
-& Roumeliotis) address; it is not implemented here. Roll/pitch/height stay
-consistent (observable via gravity); yaw/xy NEES grows over long sequences and
-should not be asserted as bounded without FEJ.
+Consistency: with EKFConfig.use_fej (default) the learned-displacement update
+uses first-estimates Jacobians -- the clone's measurement frame R_g and
+linearisation are frozen at cloning, which measurably fixes the yaw/xy NEES
+leak (see results/REPORT.md). Camera updates remain estimate-linearised:
+camera-side FEJ variants were measured and did not close the leak (see
+qlio.camera.feature_jacobians docstring), so their consistency caveat stands.
 """
 
 from collections import OrderedDict, defaultdict

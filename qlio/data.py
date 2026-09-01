@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .geometry import gravity_aligned_frame, quat_to_rot, skew, so3_exp
+from .geometry import gravity_aligned_frame, quats_to_rots, skew, so3_exp
 
 GRAVITY = np.array([0.0, 0.0, -9.81])
 
@@ -67,8 +67,7 @@ def load_tlio_sequence(seq_dir):
         raise KeyError(candidates)
 
     ts = col("ts").reshape(-1) * 1e-6
-    quat = col("qxyzw")
-    R_wb = np.stack([quat_to_rot(q) for q in quat])
+    R_wb = quats_to_rots(col("qxyzw"))
     p_w = col("pos")
     try:
         v_w = col("vel")

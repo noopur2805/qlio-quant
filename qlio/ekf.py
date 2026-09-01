@@ -2,6 +2,15 @@
 
 Error state: [dtheta, dv, dp, dbg, dba] (15) followed by 6 per clone
 [dtheta_c, dp_c]. Attitude error is right-invariant, R = R_hat exp(dtheta).
+
+With cfg.use_fej (default), the displacement update uses first-estimates
+Jacobians (FEJ, Huang/Mourikis/Roumeliotis): the clone's gravity-aligned
+measurement frame R_g is frozen at cloning, so the measurement model is
+expressed in a known constant frame, H is constant, and repeated updates
+against the same clone cannot re-linearise it -- which is what leaks spurious
+information into the unobservable directions (global xy, yaw) in the naive
+filter. Residuals always use the current best estimates. The propagation
+Jacobian linearises at the propagated prior, its first estimate.
 """
 
 from collections import deque
@@ -30,6 +39,7 @@ class EKFConfig:
     max_clones: int = 2
     chi2_gate: float = 30.0        # 3-DoF gate; None disables
     cov_inflation: float = 1.0     # scales the network covariance fed to the filter
+    use_fej: bool = True           # first-estimates Jacobians (consistency fix)
 
 
 @dataclass
@@ -38,7 +48,7 @@ class Clone:
     p: np.ndarray
     t: float
     cid: int = -1
-    R_g: np.ndarray = field(default=None)
+    R_g: np.ndarray = field(default=None)   # frozen at cloning under FEJ
 
     def __post_init__(self):
         if self.R_g is None:
@@ -158,15 +168,20 @@ class StochasticCloningEKF:
     def displacement_jacobian(self, k):
         cl = self.clones[k]
         R_g = cl.R_g
-        dp = self.p - cl.p
         H = np.zeros((3, self.dim))
         H[:, 6:9] = R_g.T
         s = self._clone_slice(k)
         H[:, s.start + 3:s.start + 6] = -R_g.T
-        # The clone frame is yaw-only, so attitude enters through d(yaw) only.
-        dyaw_dtheta = yaw_world_jacobian(cl.R) @ cl.R
-        H[:, s.start:s.start + 3] = -np.outer(R_g.T @ skew(E3) @ dp, dyaw_dtheta)
-        return H, R_g.T @ dp
+        if not self.cfg.use_fej:
+            # Legacy frame handling: R_g is re-derived from the evolving clone
+            # estimate at every update, so the model depends on clone yaw and
+            # attitude enters through d(yaw).
+            dp = self.p - cl.p
+            dyaw_dtheta = yaw_world_jacobian(cl.R) @ cl.R
+            H[:, s.start:s.start + 3] = -np.outer(R_g.T @ skew(E3) @ dp, dyaw_dtheta)
+        # Under FEJ, R_g is frozen at cloning: the measurement frame is a known
+        # constant, the model has no yaw dependence, and H never re-linearises.
+        return H, R_g.T @ (self.p - cl.p)
 
     def update_displacement(self, z, cov, k=0):
         """Fuse a learned displacement measurement expressed in clone k's frame."""
@@ -212,7 +227,10 @@ class StochasticCloningEKF:
             s = self._clone_slice(k)
             cl.R = cl.R @ so3_exp(dx[s.start:s.start + 3])
             cl.p = cl.p + dx[s.start + 3:s.start + 6]
-            cl.R_g = gravity_aligned_frame(cl.R)
+            if not self.cfg.use_fej:
+                # Legacy behaviour: re-linearise the measurement frame with the
+                # updated estimate. Under FEJ the frame stays frozen at cloning.
+                cl.R_g = gravity_aligned_frame(cl.R)
 
     # ---- diagnostics ------------------------------------------------
     def pose_covariance(self):
