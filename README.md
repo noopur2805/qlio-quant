@@ -36,9 +36,31 @@ EuRoC additionally: 2700 images, 204 features/frame, 44 330 MSCKF feature
 fusions, 10 s relative trajectory error 0.37 m. Ground truth is position-only,
 so metrics use standard 4-DoF (yaw + translation) alignment.
 
+![EuRoC MH_01 top-down and altitude](results/euroc/euroc_vio.png)
+
+Real images, real KLT front-end, no oracle association: the estimate tracks
+Leica ground truth through 135 s of handheld flight including repeated loops.
+Altitude (right) stays locked across the full ±2 m range — the vertical
+direction is metrically observable here because gravity anchors it.
+
+![EuRoC 3D trajectory and error](results/euroc/trajectory_3d.png)
+
+Absolute position error (right) stays in the 0.1–0.8 m band with no secular
+growth over 135 s, which is the useful view. **The 3D panel on the left is a
+worked example of the dead-reckoning scaling problem:** IMU-only integration
+spans ±12 500 m, so ground truth and VIO collapse into the single dot at the
+centre. Regenerate with `--no-dead-reckoning` to actually compare the
+trajectories against each other.
+
 ### Quantization: accuracy vs. calibration vs. cost
 
 fp32 baseline: RMSE 0.230 m, mean z² 1.19, 116 KB, 0.97 ms p50.
+
+![Quantization: RMSE and calibration vs bit-width](results/tlio_full_small/plots/quant_uncertainty.png)
+
+The two panels are the whole argument: calibration (left) degrades sharply
+while displacement RMSE (right) stays nearly flat for the mean head. An
+accuracy-only acceptance test cannot see this.
 
 | Scope | Bits | RMSE (m) | mean z² | Size |
 |---|---|---|---|---|
@@ -70,10 +92,17 @@ a finding worth stating.
 | RMSE | 0.230 m | 0.252 m | +9 % |
 | mean z² | 1.19 | 2.41 | worse |
 
+![Model size and inference latency](results/tlio_full_small/plots/quant_deploy.png)
+
 Native PTQ touches more of the graph than the per-scope simulation (quantized
 add/pool, fused conv-bn), so it costs more calibration than any simulated
 scope predicts. The simulation is not a substitute for measuring the real
 deployment path.
+
+![Variance recalibration](results/tlio_full_small/plots/quant_calibration.png)
+
+Predicted σ against realised RMS error. Points above the diagonal are
+overconfident.
 
 ### Downstream EKF consistency
 
@@ -85,11 +114,15 @@ deployment path.
 | int8-all + recal | 4.95 m | 6.21 % | 5.57 |
 | int8-trunk (cov fp32) | 5.05 m | 6.39 % | 6.57 |
 
+![EKF drift and consistency by precision config](results/tlio_full_small/plots/quant_ekf_consistency.png)
+
 NEES/dof = 1.0 is a consistent filter. fp32 is already overconfident at 2.78,
 so the quantization deltas sit on top of an imperfect baseline — worth stating
 plainly rather than attributing all inconsistency to precision.
 
 ### FEJ consistency fix
+
+![VIO diagnostics](results/plots/vio_diagnostics.png)
 
 Re-deriving the gravity-aligned measurement frame from the evolving clone at
 every update leaks information into unobservable directions. Freezing it at

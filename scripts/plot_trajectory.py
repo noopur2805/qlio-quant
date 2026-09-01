@@ -50,16 +50,25 @@ def main():
 
     fig = plt.figure(figsize=(13, 5.5))
 
+    gt = d[GT]
+    gt_extent = np.ptp(gt, axis=0).max()
+
+    # Dead reckoning is routinely 100-1000x the ground-truth extent. Including it
+    # in the axis limits collapses every other trajectory to a single dot, so keep
+    # it out of the scaling (and out of the view) when it dominates.
+    dr_dominates = (DR in names and
+                    np.ptp(d[DR], axis=0).max() > 10 * max(gt_extent, 1e-9))
+    plot_names = [n for n in names if not (dr_dominates and n == DR)]
+
     ax = fig.add_subplot(1, 2, 1, projection="3d")
     shown, ci = [], 0
-    for n in names:
+    for n in plot_names:
         pts = d[n]
         st = STYLE.get(n) or dict(color=PALETTE[ci % len(PALETTE)], lw=1.3, label=n)
         if n not in STYLE:
             ci += 1
         ax.plot(pts[:, 0], pts[:, 1], pts[:, 2], **st)
         shown.append(pts)
-    gt = d[GT]
     ax.scatter(*gt[0], c="green", s=45, marker="o", label="start")
     ax.scatter(*gt[-1], c="red", s=45, marker="X", label="end")
     equal_aspect_3d(ax, np.concatenate(shown))
@@ -67,6 +76,10 @@ def main():
     ax.set_title("3D trajectory")
     ax.view_init(elev=args.elev, azim=args.azim)
     ax.legend(fontsize=8, loc="upper left")
+    if dr_dominates:
+        span = np.ptp(d[DR], axis=0).max()
+        ax.text2D(0.02, 0.02, f"dead reckoning omitted (spans {span:,.0f} m)",
+                  transform=ax.transAxes, fontsize=7, color="#c44e52")
 
     # Position error vs time is what actually shows divergence; the 3D view
     # alone hides it once trajectories overlap.
