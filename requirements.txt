@@ -4,3 +4,10 @@ scipy>=1.10
 matplotlib>=3.7
 gdown>=5.0
 pytest>=7.0
+
+# EuRoC real-image demo (scripts/run_euroc.py)
+opencv-python-headless>=4.8
+rosbags>=0.9
+
+# C++ EKF core build (cpp/build.sh; also needs system libeigen3-dev)
+pybind11>=2.11

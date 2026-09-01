@@ -5,3 +5,4 @@ __pycache__/
 local_data/
 results/
 *.egg-info/
+cpp/*.so
