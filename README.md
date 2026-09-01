@@ -1,4 +1,4 @@
-# qlio-quant — Quantized Learned Inertial Odometry
+# Quantized Learned Inertial Odometry
 
 A stochastic-cloning EKF (MSCKF-style) visual-inertial odometry system, with a
 TLIO-style learned displacement+covariance network fused in as an additional
