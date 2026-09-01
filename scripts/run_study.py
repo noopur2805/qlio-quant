@@ -30,7 +30,7 @@ from qlio.metrics import (ate, drift_ratio, fit_variance_scale, nees_stats,
 from qlio.model import small_resnet, tlio_resnet
 from qlio.predictor import OracleDisplacement, TorchPredictor
 from qlio.quantize import (apply_fake_quant, benchmark_latency, calibrate,
-                           model_size_bytes)
+                           model_size_bytes, real_static_ptq)
 from qlio.train import evaluate, train
 from qlio.vio_runner import VIOConfig, run_vio
 
@@ -83,9 +83,17 @@ def part1_vio_diagnostics(seq=None):
                         cfg=VIOConfig(use_camera=True, use_inertial_net=True))
 
     # Inertial overlap consistency: independent-20Hz vs inflated-20Hz vs 1Hz.
-    ekf_indep = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=10, overlap_inflation=False))
-    ekf_inflated = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=10, overlap_inflation=True))
-    ekf_1hz = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=200, overlap_inflation=False))
+    # Run under the legacy linearisation (use_fej=False) -- the regime in which
+    # the double-counting pathology was diagnosed; panel (e) then shows what
+    # FEJ does on top of the inflation fix.
+    ekf_indep = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=10, overlap_inflation=False),
+                           ekf_cfg=EKFConfig(use_fej=False))
+    ekf_inflated = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=10, overlap_inflation=True),
+                              ekf_cfg=EKFConfig(use_fej=False))
+    ekf_1hz = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=200, overlap_inflation=False),
+                         ekf_cfg=EKFConfig(use_fej=False))
+    ekf_fej = run_filter(seq, oracle, run_cfg=RunConfig(update_stride=10, overlap_inflation=True),
+                         ekf_cfg=EKFConfig(use_fej=True))
 
     fig, axs = plt.subplots(2, 3, figsize=(15.5, 9))
 
@@ -114,7 +122,7 @@ def part1_vio_diagnostics(seq=None):
     ax.set_xticks(x); ax.set_xticklabels(names, rotation=30)
     ax.axhline(1.0, color="green", ls=":", lw=1, label="consistent (z²=1)")
     ax.set_ylabel("mean z² = (err/σ)²")
-    ax.set_title("(b) Growth concentrates in unobservable\ndirections (yaw, x, y) -- FEJ limitation")
+    ax.set_title("(b) Camera-only: growth concentrates in\nunobservable directions (estimate-linearised)")
     ax.legend(fontsize=8)
 
     ax = axs[1, 0]
@@ -139,9 +147,22 @@ def part1_vio_diagnostics(seq=None):
         ax.text(i, v, f"{v:.1f}", ha="center", va="bottom")
     ax.set_ylabel("NEES / dof")
     ax.set_yscale("log")
-    ax.set_title("(d) Inertial-side double-counting fix")
+    ax.set_title("(d) Inertial-side double-counting fix\n(legacy linearisation)")
 
-    axs[1, 2].axis("off")
+    ax = axs[1, 2]
+    labels = ["estimate-linearised\n(legacy)", "FEJ\n(frozen clone frame)"]
+    nees_pair = [nees_stats(ekf_inflated.pose_nees, dof=6)["normalized"],
+                 nees_stats(ekf_fej.pose_nees, dof=6)["normalized"]]
+    drift_pair = [drift_ratio(ekf_inflated.p_est, ekf_inflated.p_gt) * 100,
+                  drift_ratio(ekf_fej.p_est, ekf_fej.p_gt) * 100]
+    bars = ax.bar(labels, nees_pair, color=["#c44e52", "#55a868"])
+    ax.axhline(1.0, color="green", ls=":", lw=1, label="consistent (NEES=1)")
+    for b, nv, dv in zip(bars, nees_pair, drift_pair):
+        ax.text(b.get_x() + b.get_width() / 2, nv, f"NEES {nv:.2f}\ndrift {dv:.2f}%",
+                ha="center", va="bottom", fontsize=8)
+    ax.set_ylabel("NEES / dof")
+    ax.set_title("(e) FEJ fixes displacement-update\nconsistency (20Hz inflated)")
+    ax.legend(fontsize=8)
 
     fig.tight_layout()
     fig.savefig(PLOTS / "vio_diagnostics.png", dpi=140)
@@ -155,6 +176,10 @@ def part1_vio_diagnostics(seq=None):
             "independent_bug": nees_stats(ekf_indep.pose_nees, dof=6)["normalized"],
             "inflated_fix": nees_stats(ekf_inflated.pose_nees, dof=6)["normalized"],
             "1hz_reference": nees_stats(ekf_1hz.pose_nees, dof=6)["normalized"],
+        },
+        "fej": {
+            "legacy_nees_dof": nees_pair[0], "fej_nees_dof": nees_pair[1],
+            "legacy_drift_pct": drift_pair[0], "fej_drift_pct": drift_pair[1],
         },
     }
 
@@ -217,10 +242,19 @@ SCOPE_SETS = {
 }
 
 
+def serialized_size_bytes(model):
+    import io
+    buf = io.BytesIO()
+    torch.save(model.state_dict(), buf)
+    return buf.tell()
+
+
 def part3_quantization(model, val_ds, test_ds, test_seq):
     log("Part 3: quantization ablation across bit-widths and per-scope targets")
     from qlio.data import calibration_batches
-    calib = calibration_batches(val_ds, n=128, batch_size=16, seed=0)
+    # Materialise: calibration_batches is a generator, and every quantized
+    # variant must see the same (non-empty) calibration set.
+    calib = list(calibration_batches(val_ds, n=128, batch_size=16, seed=0))
 
     x_bench = torch.randn(1, 6, 200)
     fp32_size = model_size_bytes(model)  # all scopes fp32 -> reports true fp32 size
@@ -243,6 +277,27 @@ def part3_quantization(model, val_ds, test_ds, test_seq):
             })
             log(f"  scope={scope_name:14s} bits={bits}  rmse={rmse:.4f}  mean_z2={z2:6.2f}  "
                 f"size={size/1024:.1f}KB  p50={lat['p50_ms']:.3f}ms")
+
+    # Native int8 static PTQ: real quantized kernels, real speedup -- the
+    # deployment path (fake-quant rows above isolate accuracy effects only).
+    native = real_static_ptq(model, calib)
+    if isinstance(native, dict):
+        log(f"  native int8 PTQ unavailable: {native['error']}")
+        native_row = {"error": native["error"]}
+        native_model = None
+    else:
+        err_n, sig_n = evaluate(native, test_ds)
+        lat_n = benchmark_latency(native, x_bench)
+        size_n = serialized_size_bytes(native)
+        native_row = {
+            "rmse_m": float(np.sqrt(np.mean(np.sum(err_n**2, axis=1)))),
+            "mean_z2": overconfidence(err_n, sig_n),
+            "size_bytes": size_n, "p50_ms": lat_n["p50_ms"],
+        }
+        native_model = native
+        log(f"  native int8 (fbgemm)   rmse={native_row['rmse_m']:.4f}  "
+            f"mean_z2={native_row['mean_z2']:6.2f}  size={size_n/1024:.1f}KB  "
+            f"p50={lat_n['p50_ms']:.3f}ms  (fp32 p50={fp32_lat['p50_ms']:.3f}ms)")
 
     # Recalibration: fix an int8-all-quantized model's covariance post-hoc.
     qm8 = apply_fake_quant(model, scopes=SCOPE_SETS["all"], w_bits=8, a_bits=8)
@@ -306,15 +361,26 @@ def part3_quantization(model, val_ds, test_ds, test_seq):
     fig.savefig(PLOTS / "quant_calibration.png", dpi=140)
     plt.close(fig)
 
-    # --- Figure: deployment cost (size, latency) for the "all" scope sweep ---
+    # --- Figure: deployment cost (size, latency) ---
+    # Sizes for simulated rows are analytic (params at w_bits); the native row
+    # is the serialized quantized model. Fake-quant latency is simulation
+    # overhead, not a deployment number, so the latency panel shows the real
+    # fp32 vs native-int8 pair only.
     fig, axs = plt.subplots(1, 2, figsize=(10, 4))
-    xs = ["fp32"] + [f"int{b}" for b in BIT_WIDTHS]
+    xs = ["fp32"] + [f"int{b}\n(sim)" for b in BIT_WIDTHS]
     sizes = [fp32_size] + [next(r["size_bytes"] for r in rows if r["scope"] == "all" and r["bits"] == b) for b in BIT_WIDTHS]
-    lats = [fp32_lat["p50_ms"]] + [next(r["p50_ms"] for r in rows if r["scope"] == "all" and r["bits"] == b) for b in BIT_WIDTHS]
+    if "size_bytes" in native_row:
+        xs.insert(1, "int8\n(native)")
+        sizes.insert(1, native_row["size_bytes"])
     axs[0].bar(xs, np.array(sizes) / 1024, color="#4c72b0")
     axs[0].set_ylabel("model size (KB)"); axs[0].set_title("(a) Parameter storage")
-    axs[1].bar(xs, lats, color="#55a868")
-    axs[1].set_ylabel("p50 latency (ms), batch=1, CPU"); axs[1].set_title("(b) Inference latency")
+    lat_xs, lat_vals = ["fp32"], [fp32_lat["p50_ms"]]
+    if "p50_ms" in native_row:
+        lat_xs.append("int8 (native)")
+        lat_vals.append(native_row["p50_ms"])
+    axs[1].bar(lat_xs, lat_vals, color="#55a868")
+    axs[1].set_ylabel("p50 latency (ms), batch=1, CPU")
+    axs[1].set_title("(b) Inference latency (real kernels)")
     fig.tight_layout()
     fig.savefig(PLOTS / "quant_deploy.png", dpi=140)
     plt.close(fig)
@@ -323,24 +389,27 @@ def part3_quantization(model, val_ds, test_ds, test_seq):
         "fp32": {"rmse_m": float(np.sqrt(np.mean(np.sum(err0**2, axis=1)))),
                 "mean_z2": overconfidence(err0, sig0),
                 "size_bytes": fp32_size, "p50_ms": fp32_lat["p50_ms"]},
+        "native_int8": native_row,
         "sweep": [{k: v for k, v in r.items() if k not in ("err", "sig")} for r in rows],
         "recalibration": {"scale": scale.tolist(),
                           "mean_z2_before": overconfidence(err_test, sig_test),
                           "mean_z2_after": z2_recal},
-    }
+    }, native_model
 
 
 # --------------------------------------------------------------------------
 # Part 4: does the quantized network still work inside the EKF?
 # --------------------------------------------------------------------------
 
-def part4_ekf_with_quantized_net(model, val_ds, test_seq):
+def part4_ekf_with_quantized_net(model, val_ds, test_seq, native_model=None):
     log("Part 4: quantized network as an EKF measurement source")
     from qlio.data import calibration_batches
-    calib = calibration_batches(val_ds, n=128, batch_size=16, seed=0)
+    calib = list(calibration_batches(val_ds, n=128, batch_size=16, seed=0))
 
     configs = {}
     configs["fp32"] = TorchPredictor(model)
+    if native_model is not None:
+        configs["int8-native"] = TorchPredictor(native_model)
 
     qm8 = apply_fake_quant(model, scopes=SCOPE_SETS["all"], w_bits=8, a_bits=8)
     calibrate(qm8, calib)
@@ -370,7 +439,8 @@ def part4_ekf_with_quantized_net(model, val_ds, test_seq):
     names = list(configs.keys())
     drifts = [results[n]["drift_pct"] for n in names]
     nees = [results[n]["nees_dof"] for n in names]
-    colors = ["#4c72b0", "#c44e52", "#55a868", "#8172b2"]
+    palette = ["#4c72b0", "#c44e52", "#55a868", "#8172b2", "#ccb974", "#64b5cd"]
+    colors = [palette[i % len(palette)] for i in range(len(names))]
     axs[0].bar(names, drifts, color=colors)
     axs[0].axhline(results["dead_reckoning_ate_m"] and drift_ratio(dr, test_seq.p_w) * 100,
                   color="k", ls="--", lw=1, label="dead reckoning")
@@ -445,8 +515,8 @@ def main():
     diag = None if args.skip_camera else part1_vio_diagnostics(
         seq=test_seq if args.data_root else None)
     model, train_ds, val_ds, test_ds, history = part2_train(args, train_seqs, val_seqs, test_seqs)
-    quant = part3_quantization(model, val_ds, test_ds, test_seq)
-    ekf_quant = part4_ekf_with_quantized_net(model, val_ds, test_seq)
+    quant, native_model = part3_quantization(model, val_ds, test_ds, test_seq)
+    ekf_quant = part4_ekf_with_quantized_net(model, val_ds, test_seq, native_model=native_model)
 
     report = {"config": vars(args), "vio_diagnostics": diag, "training_history": history,
               "quantization": quant, "ekf_with_quantized_net": ekf_quant}
