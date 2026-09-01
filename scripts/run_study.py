@@ -425,8 +425,15 @@ def part4_ekf_with_quantized_net(model, val_ds, test_seq, native_model=None):
 
     dr = dead_reckon(test_seq)
     results = {"dead_reckoning_ate_m": ate(dr, test_seq.p_w)}
+    trajectories, traj_t = {}, None
     for name, predictor in configs.items():
         run = run_filter(test_seq, predictor, run_cfg=RunConfig(update_stride=10, overlap_inflation=True))
+        if traj_t is None:  # filter logs at update rate, not IMU rate
+            traj_t = run.t
+            trajectories["ground_truth"] = run.p_gt
+            trajectories["dead_reckoning"] = np.stack(
+                [np.interp(run.t, test_seq.ts, dr[:, k]) for k in range(3)], axis=1)
+        trajectories[name] = run.p_est
         results[name] = {
             "ate_m": ate(run.p_est, run.p_gt),
             "drift_pct": drift_ratio(run.p_est, run.p_gt) * 100,
@@ -435,6 +442,9 @@ def part4_ekf_with_quantized_net(model, val_ds, test_seq, native_model=None):
         log(f"  {name:24s} ATE={results[name]['ate_m']:.3f}m  drift={results[name]['drift_pct']:.2f}%  "
             f"NEES/dof={results[name]['nees_dof']:.2f}")
 
+    np.savez(OUT / "trajectories.npz", t=traj_t, **trajectories)
+    log(f"  trajectories saved to {OUT/'trajectories.npz'}")
+
     fig, axs = plt.subplots(1, 2, figsize=(11, 4.2))
     names = list(configs.keys())
     drifts = [results[n]["drift_pct"] for n in names]
@@ -442,10 +452,12 @@ def part4_ekf_with_quantized_net(model, val_ds, test_seq, native_model=None):
     palette = ["#4c72b0", "#c44e52", "#55a868", "#8172b2", "#ccb974", "#64b5cd"]
     colors = [palette[i % len(palette)] for i in range(len(names))]
     axs[0].bar(names, drifts, color=colors)
-    axs[0].axhline(results["dead_reckoning_ate_m"] and drift_ratio(dr, test_seq.p_w) * 100,
-                  color="k", ls="--", lw=1, label="dead reckoning")
+    dr_drift = drift_ratio(dr, test_seq.p_w) * 100
     axs[0].set_ylabel("drift ratio (%)"); axs[0].set_title("(a) EKF drift by precision config")
-    axs[0].tick_params(axis="x", rotation=20); axs[0].legend(fontsize=8)
+    axs[0].tick_params(axis="x", rotation=20)
+    axs[0].annotate(f"dead reckoning: {dr_drift:.0f}% (off scale)",
+                   xy=(0.02, 0.92), xycoords="axes fraction", fontsize=8,
+                   bbox=dict(boxstyle="round", fc="#eeeeee", ec="0.6"))
 
     axs[1].bar(names, nees, color=colors)
     axs[1].axhline(1.0, color="green", ls=":", lw=1)

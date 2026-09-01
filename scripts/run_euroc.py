@@ -123,8 +123,10 @@ def main():
     fig.tight_layout()
     fig.savefig(out / "euroc_vio.png", dpi=140)
 
+    np.savez(out / "trajectories.npz", t=run.t, ground_truth=run.p_gt,
+             vio=p_al, dead_reckoning=dr_al)
     (out / "results.json").write_text(json.dumps(res, indent=2))
-    log(f"wrote {out/'results.json'} and {out/'euroc_vio.png'}")
+    log(f"wrote {out/'results.json'}, {out/'euroc_vio.png'} and {out/'trajectories.npz'}")
 
 
 if __name__ == "__main__":

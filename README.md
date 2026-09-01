@@ -17,6 +17,94 @@ Headline measured results (details + caveats in `results/REPORT.md`):
 - **C++ core** (Eigen + pybind11) with lockstep parity to 1e-10 and 3.3×
   throughput.
 
+---
+
+## Results
+
+All numbers below are produced by the commands in this README. TLIO rows come
+from `results/tlio_full_small/` (full dataset, 400/40/40 sequence caps, small
+network, CPU); EuRoC rows from `results/euroc/`.
+
+### Filter accuracy, real data
+
+| System | Data | ATE | Drift | Reference |
+|---|---|---|---|---|
+| Learned-inertial + EKF | TLIO test seq | **3.45 m** | **4.25 %** | dead reckoning 1942 m |
+| Camera-only VIO (KLT + MSCKF) | EuRoC MH_01, 135 s | **0.33 m** | **0.93 %** | dead reckoning 7562 m |
+
+EuRoC additionally: 2700 images, 204 features/frame, 44 330 MSCKF feature
+fusions, 10 s relative trajectory error 0.37 m. Ground truth is position-only,
+so metrics use standard 4-DoF (yaw + translation) alignment.
+
+### Quantization: accuracy vs. calibration vs. cost
+
+fp32 baseline: RMSE 0.230 m, mean z² 1.19, 116 KB, 0.97 ms p50.
+
+| Scope | Bits | RMSE (m) | mean z² | Size |
+|---|---|---|---|---|
+| mean_head | 8 | 0.231 | 1.24 | 116 KB |
+| mean_head | 6 | 0.231 | 1.63 | 116 KB |
+| mean_head | **4** | **0.240** | **5.05** | 116 KB |
+| cov_head | 4 | 0.231 | 1.37 | 113 KB |
+| trunk | 4 | 0.650 | 2.85 | 21 KB |
+| all | 4 | 0.647 | 3.36 | 17 KB |
+
+**The headline finding is the `mean_head` 4-bit row.** Displacement RMSE moves
+0.231 → 0.240 (+4 %), which any accuracy-based acceptance test would pass,
+while calibration collapses z² 1.19 → 5.05. The filter is then fed confidently
+wrong measurements with no warning in the accuracy metrics. Quantizing the
+*mean* head damages *uncertainty* — because z² = err²/σ² rises through the
+error term while σ is untouched, and the damage concentrates in whichever axis
+has the smallest σ, which aggregate RMSE averages away.
+
+The covariance head is robust to 4 bits here. On small training subsets it was
+the fragile part instead, so this conclusion is data-budget dependent — itself
+a finding worth stating.
+
+### Native int8 (real kernels, fbgemm)
+
+| | fp32 | native int8 | Change |
+|---|---|---|---|
+| p50 latency (batch=1, CPU) | 0.97 ms | **0.44 ms** | **2.2× faster** |
+| Serialized size | 116 KB | **60 KB** | **1.9× smaller** |
+| RMSE | 0.230 m | 0.252 m | +9 % |
+| mean z² | 1.19 | 2.41 | worse |
+
+Native PTQ touches more of the graph than the per-scope simulation (quantized
+add/pool, fused conv-bn), so it costs more calibration than any simulated
+scope predicts. The simulation is not a substitute for measuring the real
+deployment path.
+
+### Downstream EKF consistency
+
+| Config | ATE | Drift | NEES/dof |
+|---|---|---|---|
+| fp32 | 3.45 m | 4.25 % | 2.78 |
+| int8-native | 6.28 m | 6.26 % | 6.02 |
+| int8-all (sim) | 5.07 m | 6.43 % | 6.28 |
+| int8-all + recal | 4.95 m | 6.21 % | 5.57 |
+| int8-trunk (cov fp32) | 5.05 m | 6.39 % | 6.57 |
+
+NEES/dof = 1.0 is a consistent filter. fp32 is already overconfident at 2.78,
+so the quantization deltas sit on top of an imperfect baseline — worth stating
+plainly rather than attributing all inconsistency to precision.
+
+### FEJ consistency fix
+
+Re-deriving the gravity-aligned measurement frame from the evolving clone at
+every update leaks information into unobservable directions. Freezing it at
+clone creation (First-Estimates Jacobian):
+
+| | NEES | Drift |
+|---|---|---|
+| Legacy (re-linearised) | 3.9 | 0.60 % |
+| FEJ (default) | **0.35** | **0.13 %** |
+
+### C++ core
+
+Lockstep parity with the Python filter to 1e-10, **3.3×** throughput on the
+mixed filter schedule.
+
 - `qlio/geometry.py` — SO(3) utilities, exact yaw-world Jacobians
 - `qlio/data.py` — TLIO golden-format loader + synthetic pedestrian IMU/trajectory generator
 - `qlio/model.py` — 1D ResNet with separate mean/log-variance heads
@@ -30,6 +118,8 @@ Headline measured results (details + caveats in `results/REPORT.md`):
 - `qlio/metrics.py` — ATE, drift ratio, NEES, mean z², 4-DoF alignment, recalibration
 - `scripts/run_study.py` — end-to-end study: diagnostics → train → quantize → re-run EKF
 - `scripts/run_euroc.py` — real-image VIO on EuRoC MH_01
+- `scripts/plot_trajectory.py` — 3D trajectory + error-vs-time from `trajectories.npz`
+- `scripts/diagnose_quant.py` — native-vs-sim, scope-overlap and seed-variance checks
 - `cpp/` — C++ EKF core (Eigen + pybind11) with parity check and benchmark
 - `tests/` — 18 unit tests covering geometry, EKF/FEJ, and camera/MSCKF paths
 
@@ -164,7 +254,8 @@ Example GPU training run: add `--device cuda` to any of the commands above.
 
 ## What the study produces
 
-`results/<name>/results.json` and five plots in `results/<name>/plots/`:
+`results/<name>/results.json`, `results/<name>/trajectories.npz`, and five
+plots in `results/<name>/plots/`:
 
 1. `vio_diagnostics.png` — camera-only trajectory, per-axis error growth,
    modality comparison, double-counting fix, FEJ vs legacy consistency A/B
@@ -174,3 +265,28 @@ Example GPU training run: add `--device cuda` to any of the commands above.
 4. `quant_deploy.png` — model size and latency vs. bit-width
 5. `quant_ekf_consistency.png` — ATE, drift %, NEES/dof for fp32 vs.
    quantized nets used as EKF measurement sources
+
+---
+
+## 3D trajectory plots
+
+`run_study.py` and `run_euroc.py` write `trajectories.npz` (ground truth, dead
+reckoning, and every filter config, all on a common time base). Render it:
+
+```bash
+PYTHONPATH=. python scripts/plot_trajectory.py results/tlio_full_small
+PYTHONPATH=. python scripts/plot_trajectory.py results/euroc
+```
+
+Writes `<run_dir>/trajectory_3d.png`: a 3D trajectory view (equal-aspect, so
+drift isn't visually flattened) alongside absolute position error vs. time.
+
+Dead reckoning is often orders of magnitude larger than everything else and
+compresses the rest to a dot — drop it to compare filter configs against each
+other:
+
+```bash
+PYTHONPATH=. python scripts/plot_trajectory.py results/tlio_full_small --no-dead-reckoning
+```
+
+View angle is adjustable with `--elev` and `--azim`.
