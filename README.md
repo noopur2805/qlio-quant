@@ -41,66 +41,6 @@ mixing a real trajectory with fake vision. For vision on **real images**, use
 
 ---
 
-## Setup
-
-### Option A: venv (no extra installs needed)
-
-```bash
-git clone https://github.com/noopur2805/qlio-quant.git
-cd qlio-quant
-python3 -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### Option B: conda
-
-```bash
-git clone https://github.com/noopur2805/qlio-quant.git
-cd qlio-quant
-conda create -n qlio python=3.11 -y
-conda activate qlio
-pip install -r requirements.txt
-```
-
-### GPU (NVIDIA/CUDA)
-
-The default `requirements.txt` install pulls CPU-only PyTorch. If you have an
-NVIDIA GPU, replace the torch wheel after installing requirements:
-
-```bash
-pip uninstall -y torch
-pip install torch --index-url https://download.pytorch.org/whl/cu124
-```
-
-Verify:
-
-```bash
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-```
-
-If you hit `undefined symbol: iJIT_NotifyEvent` on conda, it's a conda MKL/ITT
-ABI conflict, not your code — fix by force-reinstalling torch via pip inside
-the same env:
-
-```bash
-conda remove -y mkl intel-openmp mkl-service --force
-pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu
-```
-
----
-
-## Sanity check (synthetic data, no download, ~1 min)
-
-```bash
-PYTHONPATH=. python -m pytest tests -q
-PYTHONPATH=. python scripts/run_study.py --out results/synthetic
-```
-
-Outputs: `results/synthetic/results.json`, `results/synthetic/plots/*.png`.
-
----
-
 ## Real data: TLIO golden dataset
 
 IMU-only pedestrian dataset released with the TLIO paper. No images — camera
@@ -126,16 +66,6 @@ local_data/tlio_golden/
 ├── train_list.txt
 ├── val_list.txt
 └── test_list.txt
-```
-
-### Smoke test (few sequences, CPU, ~2 min)
-
-```bash
-PYTHONPATH=. python scripts/run_study.py \
-  --data-root local_data/tlio_golden \
-  --max-train-seqs 8 --max-val-seqs 2 --max-test-seqs 2 \
-  --skip-camera \
-  --out results/tlio_smoke
 ```
 
 ### Full run, CPU (smaller network)
